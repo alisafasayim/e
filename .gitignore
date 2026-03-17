@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+calibration_preview.png
+poker_tracker.log
+debug_screenshots/
+poker_tracker_config.json
