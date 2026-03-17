@@ -9,7 +9,9 @@ Kullanım:
     python main.py                    # Varsayılan ayarlarla başlat
     python main.py --console          # Terminal modunda başlat
     python main.py --config config.json  # Özel konfigürasyon dosyası
-    python main.py --calibrate        # Ekran bölgesi kalibrasyon modu
+    python main.py --calibrate        # Ekran bölgesi kalibrasyon modu (manuel)
+    python main.py --auto-calibrate   # Otomatik kalibrasyon (ekranı tarar)
+    python main.py --auto-calibrate --image screenshot.png  # Görüntüden kalibre et
     python main.py --debug            # Debug modunda başlat
 
 Kısayollar (overlay açıkken):
@@ -34,6 +36,7 @@ from config import TrackerConfig, OverlayConfig, ScreenRegion
 from game_state_tracker import GameStateTracker
 from advisor import StrategyAdvisor, AdvicePackage
 from overlay import PokerOverlay, ConsoleOverlay
+from auto_calibrator import AutoCalibrator, CalibrationReport
 
 log = logging.getLogger("PokerTracker")
 
@@ -181,10 +184,164 @@ class PokerTrackingAgent:
         }
 
 
+class AutoCalibrationMode:
+    """
+    Otomatik ekran kalibrasyon modu.
+
+    Poker masasının ekran görüntüsünü alarak tüm bölgeleri
+    otomatik olarak tespit eder. Manuel giriş gerektirmez.
+    """
+
+    def run(self, image_path: Optional[str] = None) -> TrackerConfig:
+        """
+        Otomatik kalibrasyonu çalıştır.
+
+        Args:
+            image_path: Opsiyonel. Verilmezse ekran görüntüsü alır.
+        """
+        print("\n" + "=" * 60)
+        print("  POKER TRACKER - Otomatik Kalibrasyon")
+        print("=" * 60)
+        print()
+
+        calibrator = AutoCalibrator()
+
+        if image_path:
+            # Dosyadan kalibre et
+            print(f"Görüntü yükleniyor: {image_path}")
+            try:
+                import cv2
+                image = cv2.imread(image_path)
+                if image is None:
+                    print(f"HATA: Görüntü yüklenemedi: {image_path}")
+                    return TrackerConfig()
+                print(f"Görüntü boyutu: {image.shape[1]}x{image.shape[0]}")
+            except ImportError:
+                print("HATA: opencv-python gerekli: pip install opencv-python")
+                return TrackerConfig()
+
+            layout, report = calibrator.calibrate_from_image(image)
+        else:
+            # Ekranı yakala
+            print("Poker masanızı açın ve bu ekranda görünür olduğundan emin olun.")
+            print()
+            input("Hazır olduğunuzda Enter'a basın...")
+            print()
+            print("Ekran yakalanıyor...")
+            print()
+
+            layout, report = calibrator.calibrate()
+
+        # Raporu göster
+        print("\n--- Kalibrasyon Raporu ---")
+        print(report.summary())
+
+        if not report.success:
+            print("\n⚠ Masa tespit edilemedi. Manuel kalibrasyonu deneyin:")
+            print("  python poker_tracker/main.py --calibrate")
+            return TrackerConfig()
+
+        # Önizleme bilgisi
+        if report.preview_path:
+            print(f"\nÖnizleme görüntüsü: {report.preview_path}")
+            print("Bu dosyayı açarak tespit edilen bölgeleri kontrol edin.")
+
+        # Onay
+        print()
+        confirm = input("Kalibrasyon sonuçları doğru görünüyor mu? (E/h): ").strip().lower()
+
+        if confirm in ("h", "hayır", "n", "no"):
+            print("\nManuel düzeltme moduna geçiliyor...")
+            config = self._manual_correction(layout)
+        else:
+            config = TrackerConfig()
+            config.table_layout = layout
+
+        # Blind ve seat bilgisi
+        print("\n--- Oyun Ayarları ---")
+        config.hero_seat = self._ask_int("Hero koltuk numarası (0-5)", 0, 0, 5)
+        config.small_blind = self._ask_float("Small Blind miktarı", 0.5)
+        config.big_blind = self._ask_float("Big Blind miktarı", 1.0)
+
+        # Kaydet
+        save_path = input("\nKonfigürasyon dosyası yolu (Enter=poker_tracker_config.json): ").strip()
+        if not save_path:
+            save_path = "poker_tracker_config.json"
+
+        config.save_to_file(save_path)
+        print(f"\nKonfigürasyon kaydedildi: {save_path}")
+        print(f"Şimdi tracker'ı başlatabilirsiniz:")
+        print(f"  python poker_tracker/main.py --config {save_path}")
+
+        return config
+
+    def _manual_correction(self, layout) -> TrackerConfig:
+        """Otomatik tespiti manuel düzeltme imkanı."""
+        config = TrackerConfig()
+        config.table_layout = layout
+
+        print("\nDüzeltmek istediğiniz bölge için yeni koordinat girin.")
+        print("Boş bırakırsanız otomatik tespit korunur.")
+        print("Format: x y genişlik yükseklik")
+        print()
+
+        # Board kartları
+        print("--- Board Kartları ---")
+        card_names = ["Flop 1", "Flop 2", "Flop 3", "Turn", "River"]
+        for i in range(5):
+            region = self._ask_region(card_names[i], layout.board_cards[i])
+            config.table_layout.board_cards[i] = region
+
+        # Hero kartları
+        print("\n--- Hero Kartları ---")
+        for i in range(2):
+            region = self._ask_region(f"Hero Kart {i + 1}", layout.hero_cards[i])
+            config.table_layout.hero_cards[i] = region
+
+        # Pot
+        print("\n--- Pot ---")
+        config.table_layout.pot_region = self._ask_region("Pot", layout.pot_region)
+
+        return config
+
+    def _ask_region(self, name: str, default: ScreenRegion) -> ScreenRegion:
+        default_str = f"{default.x} {default.y} {default.width} {default.height}"
+        response = input(f"  {name} [{default_str}]: ").strip()
+        if not response:
+            return default
+        try:
+            parts = response.split()
+            if len(parts) != 4:
+                print("  Geçersiz format, otomatik tespit korunuyor.")
+                return default
+            return ScreenRegion(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+        except ValueError:
+            print("  Geçersiz değer, otomatik tespit korunuyor.")
+            return default
+
+    def _ask_int(self, prompt: str, default: int, min_val: int = 0, max_val: int = 100) -> int:
+        response = input(f"  {prompt} [varsayılan: {default}]: ").strip()
+        if not response:
+            return default
+        try:
+            return max(min_val, min(max_val, int(response)))
+        except ValueError:
+            return default
+
+    def _ask_float(self, prompt: str, default: float) -> float:
+        response = input(f"  {prompt} [varsayılan: {default}]: ").strip()
+        if not response:
+            return default
+        try:
+            return float(response)
+        except ValueError:
+            return default
+
+
 class CalibrationMode:
     """
-    Ekran bölgesi kalibrasyon modu.
-    Kullanıcının poker masasının bölgelerini ayarlamasına yardımcı olur.
+    Manuel ekran bölgesi kalibrasyon modu.
+    Kullanıcının poker masasının bölgelerini elle ayarlamasına yardımcı olur.
     """
 
     def __init__(self):
@@ -193,11 +350,10 @@ class CalibrationMode:
     def run(self) -> TrackerConfig:
         """Kalibrasyon sihirbazını çalıştır."""
         print("\n" + "=" * 60)
-        print("  POKER TRACKER - Kalibrasyon Modu")
+        print("  POKER TRACKER - Manuel Kalibrasyon")
         print("=" * 60)
         print()
-        print("Bu sihirbaz poker masanızın ekran bölgelerini ayarlamanıza")
-        print("yardımcı olacaktır.")
+        print("İPUCU: Otomatik kalibrasyon için --auto-calibrate kullanın!")
         print()
         print("Her bölge için ekran koordinatlarını girin.")
         print("Format: x y genişlik yükseklik")
@@ -327,7 +483,15 @@ def main():
     )
     parser.add_argument(
         "--calibrate", action="store_true",
-        help="Ekran bölgesi kalibrasyon modunu başlat"
+        help="Manuel ekran bölgesi kalibrasyon modunu başlat"
+    )
+    parser.add_argument(
+        "--auto-calibrate", action="store_true",
+        help="Otomatik kalibrasyon (ekranı tarayarak bölgeleri tespit eder)"
+    )
+    parser.add_argument(
+        "--image", type=str, default=None,
+        help="Otomatik kalibrasyon için ekran görüntüsü dosyası"
     )
     parser.add_argument(
         "--debug", action="store_true",
@@ -355,7 +519,13 @@ def main():
     # Logging
     setup_logging(args.debug)
 
-    # Kalibrasyon modu
+    # Otomatik kalibrasyon
+    if args.auto_calibrate:
+        auto_cal = AutoCalibrationMode()
+        auto_cal.run(image_path=args.image)
+        return
+
+    # Manuel kalibrasyon modu
     if args.calibrate:
         calibrator = CalibrationMode()
         calibrator.run()

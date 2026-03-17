@@ -102,6 +102,48 @@ class TableLayout:
         default_factory=lambda: ScreenRegion(650, 750, 600, 60)
     )
 
+    def to_dict(self) -> dict:
+        """TableLayout'u sözlüğe çevir (JSON uyumlu)."""
+        import dataclasses
+
+        def _convert(obj):
+            if dataclasses.is_dataclass(obj):
+                return {k: _convert(v) for k, v in dataclasses.asdict(obj).items()}
+            if isinstance(obj, list):
+                return [_convert(i) for i in obj]
+            return obj
+
+        return _convert(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TableLayout":
+        """Sözlükten TableLayout oluştur."""
+        layout = cls()
+
+        def _to_region(d: dict) -> ScreenRegion:
+            return ScreenRegion(d["x"], d["y"], d["width"], d["height"])
+
+        if "table_window" in data:
+            layout.table_window = _to_region(data["table_window"])
+        if "board_cards" in data:
+            layout.board_cards = [_to_region(c) for c in data["board_cards"]]
+        if "hero_cards" in data:
+            layout.hero_cards = [_to_region(c) for c in data["hero_cards"]]
+        if "pot_region" in data:
+            layout.pot_region = _to_region(data["pot_region"])
+        if "bet_regions" in data:
+            layout.bet_regions = [_to_region(r) for r in data["bet_regions"]]
+        if "player_name_regions" in data:
+            layout.player_name_regions = [_to_region(r) for r in data["player_name_regions"]]
+        if "stack_regions" in data:
+            layout.stack_regions = [_to_region(r) for r in data["stack_regions"]]
+        if "dealer_button_regions" in data:
+            layout.dealer_button_regions = [_to_region(r) for r in data["dealer_button_regions"]]
+        if "action_buttons_region" in data:
+            layout.action_buttons_region = _to_region(data["action_buttons_region"])
+
+        return layout
+
 
 @dataclass
 class OCRConfig:
@@ -203,5 +245,7 @@ class TrackerConfig:
             config.scan_interval = data["scan_interval"]
         if "debug_mode" in data:
             config.debug_mode = data["debug_mode"]
+        if "table_layout" in data:
+            config.table_layout = TableLayout.from_dict(data["table_layout"])
 
         return config
